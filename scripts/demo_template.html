@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cab-ir-lab — mic position demo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background:#16181d; color:#e6e6e6; margin:0; padding:24px; display:flex; flex-wrap:wrap; gap:24px; justify-content:center; }
+  .panel { background:#1f2229; border:1px solid #2e323b; border-radius:12px; padding:20px; }
+  h1 { font-size:16px; margin:0 0 4px; } .sub { color:#8a8f99; font-size:12px; margin-bottom:16px; }
+  #speaker { position:relative; width:340px; height:340px; border-radius:50%;
+    background:radial-gradient(circle at 50% 50%, #3a3325 0 14%, #14110c 14.5% 19%, #221c12 19.5% 72%, #0e0c08 72.5% 78%, #2a2d34 78.5% 100%);
+    cursor:crosshair; touch-action:none; }
+  #micdot { position:absolute; width:18px; height:18px; border-radius:50%; background:#e2b84a; border:2px solid #fff;
+    transform:translate(-50%,-50%); pointer-events:none; box-shadow:0 0 12px #e2b84a88; }
+  label { display:block; font-size:12px; color:#aab0bb; margin:12px 0 4px; }
+  input[type=range] { width:260px; }
+  select, button { background:#2a2e37; color:#e6e6e6; border:1px solid #3a3f4a; border-radius:6px; padding:6px 10px; font-size:13px; }
+  button { cursor:pointer; } button.on { background:#2f6f4f; border-color:#3f8f67; }
+  #readout { font-variant-numeric:tabular-nums; font-size:12px; color:#8a8f99; margin-top:10px; }
+  canvas#resp { background:#14161b; border-radius:8px; }
+  .credit { font-size:11px; color:#6a6f78; margin-top:12px; max-width:340px; }
+</style>
+</head>
+<body>
+<div class="panel">
+  <h1>Mic position &rarr; generated cabinet IR</h1>
+  <div class="sub">drag the mic over the speaker &middot; model runs live in JS</div>
+  <div id="speaker"><div id="micdot" style="left:55%;top:50%"></div></div>
+  <div id="readout"></div>
+</div>
+<div class="panel">
+  <h1>Controls</h1>
+  <div class="sub">synthetic-cab smoke model (numpy-trained, browser inference)</div>
+  <label>Microphone</label>
+  <select id="mic"></select>
+  <label>Distance from grill: <span id="dval">25</span> mm</label>
+  <input type="range" id="dist" min="5" max="300" value="25">
+  <label>Off-axis angle: <span id="aval">0</span>&deg;</label>
+  <input type="range" id="angle" min="0" max="45" value="0">
+  <label>&nbsp;</label>
+  <button id="play">&#9654; Play riff</button>
+  <button id="bypass">Bypass cab</button>
+  <label>Frequency response (20 Hz &ndash; 20 kHz, 60 dB span)</label>
+  <canvas id="resp" width="360" height="160"></canvas>
+  <div class="credit">Guitar source is a Karplus-Strong riff synthesized in-browser and soft-clipped pre-cab. IR = model magnitude &rarr; min-phase reconstruction &rarr; ConvolverNode. Zero downloads.</div>
+</div>
+
+<script>
+"use strict";
+// ---------- model weights ----------
+const META = /*__META__*/;
+const WBYTES = Uint8Array.from(atob("__WEIGHTS_B64__"), c => c.charCodeAt(0));
+const WFLOATS = new Float32Array(WBYTES.buffer);
+const PARAMS = {};
+for (const l of META.layers) PARAMS[l.key] = { data: WFLOATS.subarray(l.offset, l.offset + l.shape.reduce((a,b)=>a*b,1)), shape: l.shape };
+
+const N_TAPS = 4096, N_FFT = 4096, SR = 48000, NBINS = 2049, C_MM_S = 343000;
+
+function forward(x) { // x: Float64Array(cond_dim)
+  let h = x;
+  const L = META.sizes.length - 1;
+  for (let i = 0; i < L; i++) {
+    const W = PARAMS["W"+i], b = PARAMS["b"+i], [rows, cols] = W.shape;
+    const out = new Float64Array(cols);
+    for (let r = 0; r < rows; r++) {
+      const hv = h[r]; if (hv === 0) continue;
+      const base = r * cols;
+      for (let c = 0; c < cols; c++) out[c] += hv * W.data[base + c];
+    }
+    for (let c = 0; c < cols; c++) { out[c] += b.data[c]; if (i < L-1 && out[c] < 0) out[c] = 0; }
+    h = out;
+  }
+  return h; // log-magnitude, NBINS
+}
+
+// ---------- FFT (iterative radix-2, complex) ----------
+function fft(re, im, inv) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (inv ? 2 : -2) * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len/2; k++) {
+        const ur = re[i+k], ui = im[i+k];
+        const vr = re[i+k+len/2]*cr - im[i+k+len/2]*ci, vi = re[i+k+len/2]*ci + im[i+k+len/2]*cr;
+        re[i+k] = ur+vr; im[i+k] = ui+vi; re[i+k+len/2] = ur-vr; im[i+k+len/2] = ui-vi;
+        const ncr = cr*wr - ci*wi; ci = cr*wi + ci*wr; cr = ncr;
+      }
+    }
+  }
+  if (inv) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+
+// ---------- min-phase IR from log-magnitude ----------
+function minphaseIR(logmag) {
+  const re = new Float64Array(N_FFT), im = new Float64Array(N_FFT);
+  for (let k = 0; k < NBINS; k++) re[k] = logmag[k];
+  for (let k = NBINS; k < N_FFT; k++) re[k] = logmag[N_FFT - k];
+  fft(re, im, true);                      // real cepstrum
+  re[0] = re[0]; im.fill(0);
+  for (let k = 1; k < N_FFT/2; k++) re[k] *= 2;
+  for (let k = N_FFT/2 + 1; k < N_FFT; k++) re[k] = 0;
+  const cr = re, ci = new Float64Array(N_FFT);
+  fft(cr, ci, false);                     // back to spectrum: exp()
+  for (let k = 0; k < N_FFT; k++) {
+    const m = Math.exp(cr[k]); cr[k] = m * Math.cos(ci[k]); ci[k] = m * Math.sin(ci[k]);
+  }
+  fft(cr, ci, true);
+  const ir = new Float32Array(N_TAPS);
+  for (let k = 0; k < N_TAPS; k++) ir[k] = cr[k];
+  const nf = N_TAPS >> 2;                 // tail fade
+  for (let k = 0; k < nf; k++) ir[N_TAPS-1-k] *= 0.5 - 0.5*Math.cos(Math.PI*k/nf);
+  return ir;
+}
+
+// ---------- condition encoding (mirror cabir/model.py) ----------
+function encodeCondition(micIdx, distMm, offMm, angDeg) {
+  const x = new Float64Array(META.mics.length + 3);
+  x[micIdx] = 1;
+  x[META.mics.length]     = (Math.log(distMm) - Math.log(40)) / 1.5;
+  x[META.mics.length + 1] = offMm / 130 * 2 - 1;
+  x[META.mics.length + 2] = angDeg / 45 * 2 - 1;
+  return x;
+}
+
+function generateIR(micIdx, distMm, offMm, angDeg) {
+  const logmag = forward(encodeCondition(micIdx, distMm, offMm, angDeg));
+  let ir = minphaseIR(logmag);
+  const delay = Math.round(distMm / C_MM_S * SR);   // physical pre-delay
+  if (delay > 0) { const s = new Float32Array(N_TAPS); s.set(ir.subarray(0, N_TAPS-delay), delay); ir = s; }
+  let e = 0; for (let i = 0; i < N_TAPS; i++) e += ir[i]*ir[i];
+  const g = 1 / Math.max(Math.sqrt(e), 1e-12);
+  for (let i = 0; i < N_TAPS; i++) ir[i] *= g * 0.25;
+  return { ir, logmag };
+}
+
+// ---------- Karplus-Strong riff ----------
+function synthRiff(sr) {
+  const bpm = 96, spb = 60/bpm, notes = [[82.4,2],[82.4,1],[98,1],[110,2],[82.4,1],[73.4,1],[82.4,2],[123.5,1],[110,1],[98,2],[82.4,2]];
+  const total = notes.reduce((a,n)=>a+n[1],0) * spb * 0.5;
+  const buf = new Float32Array(Math.ceil(total*sr) + sr);
+  let t = 0;
+  for (const [f, beats] of notes) {
+    const start = Math.floor(t*sr), durS = beats*spb*0.5, N = Math.floor(sr/f);
+    const dl = new Float32Array(N);
+    for (let i = 0; i < N; i++) dl[i] = Math.random()*2-1;
+    let idx = 0;
+    const len = Math.floor(durS*sr*1.6);
+    for (let i = 0; i < len && start+i < buf.length; i++) {
+      const nxt = (idx+1)%N;
+      const v = dl[idx];
+      dl[idx] = 0.996 * 0.5 * (dl[idx] + dl[nxt]);
+      buf[start+i] += v * Math.exp(-i/(sr*1.2));
+      idx = nxt;
+    }
+    t += durS;
+  }
+  for (let i = 0; i < buf.length; i++) buf[i] = Math.tanh(buf[i]*3.2)*0.5;  // pre-cab drive
+  return buf;
+}
+
+// ---------- audio graph ----------
+let ctx = null, conv = null, dry = null, src = null, playing = false, bypass = false;
+function ensureAudio() {
+  if (ctx) return;
+  ctx = new AudioContext({ sampleRate: SR });
+  conv = ctx.createConvolver(); conv.normalize = false;
+  dry = ctx.createGain(); dry.gain.value = 0;
+  const wet = ctx.createGain(); wet.gain.value = 1;
+  const riff = synthRiff(ctx.sampleRate);
+  const buf = ctx.createBuffer(1, riff.length, ctx.sampleRate);
+  buf.getChannelData(0).set(riff);
+  src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
+  src.connect(conv); conv.connect(wet); wet.connect(ctx.destination);
+  src.connect(dry); dry.connect(ctx.destination);
+  src.start();
+  window._nodes = { wet };
+}
+function setIRBuffer(ir) {
+  if (!ctx) return;
+  const b = ctx.createBuffer(1, ir.length, SR);
+  b.getChannelData(0).set(ir);
+  conv.buffer = b;
+}
+
+// ---------- UI ----------
+const micSel = document.getElementById("mic");
+META.mics.forEach((m,i) => micSel.add(new Option(m, i)));
+const distEl = document.getElementById("dist"), angEl = document.getElementById("angle");
+const sp = document.getElementById("speaker"), dot = document.getElementById("micdot");
+const readout = document.getElementById("readout");
+const respC = document.getElementById("resp").getContext("2d");
+let offMm = 30;
+
+function drawResp(logmag) {
+  respC.clearRect(0,0,360,160);
+  respC.strokeStyle = "#3a3f4a"; respC.beginPath();
+  for (const db of [-40,-20,0]) { const y = 20 + (0-db)/60*120; respC.moveTo(0,y); respC.lineTo(360,y); } respC.stroke();
+  respC.strokeStyle = "#e2b84a"; respC.lineWidth = 1.6; respC.beginPath();
+  const ref = Math.max(...logmag);
+  for (let px = 0; px < 360; px++) {
+    const f = 20 * Math.pow(1000, px/360);
+    const bin = Math.min(NBINS-1, Math.round(f / (SR/2) * (NBINS-1)));
+    const db = (logmag[bin] - ref) * 8.686;
+    const y = 20 + Math.min(120, Math.max(0, -db/60*120));
+    px ? respC.lineTo(px,y) : respC.moveTo(px,y);
+  }
+  respC.stroke(); respC.lineWidth = 1;
+}
+
+let pending = false;
+function update() {
+  if (pending) return;
+  pending = true;
+  requestAnimationFrame(() => {
+    pending = false;
+    const micIdx = +micSel.value, d = +distEl.value, a = +angEl.value;
+    document.getElementById("dval").textContent = d;
+    document.getElementById("aval").textContent = a;
+    const t0 = performance.now();
+    const { ir, logmag } = generateIR(micIdx, d, offMm, a);
+    setIRBuffer(ir);
+    drawResp(logmag);
+    readout.textContent = `offset ${offMm.toFixed(0)} mm from cap · ${d} mm out · ${a}° · IR generated in ${(performance.now()-t0).toFixed(1)} ms`;
+  });
+}
+
+function dragTo(ev) {
+  const r = sp.getBoundingClientRect();
+  const x = (ev.clientX ?? ev.touches[0].clientX) - r.left - r.width/2;
+  const y = (ev.clientY ?? ev.touches[0].clientY) - r.top - r.height/2;
+  const rad = Math.min(Math.hypot(x,y), r.width/2 * 0.95);
+  const angPos = Math.atan2(y,x);
+  dot.style.left = (50 + rad*Math.cos(angPos)/r.width*100) + "%";
+  dot.style.top  = (50 + rad*Math.sin(angPos)/r.height*100) + "%";
+  offMm = rad / (r.width/2) * 130;
+  update();
+}
+let dragging = false;
+sp.addEventListener("pointerdown", e => { dragging = true; ensureAudio(); ctx.resume(); dragTo(e); });
+window.addEventListener("pointermove", e => dragging && dragTo(e));
+window.addEventListener("pointerup", () => dragging = false);
+micSel.addEventListener("change", update);
+distEl.addEventListener("input", update);
+angEl.addEventListener("input", update);
+
+document.getElementById("play").addEventListener("click", function() {
+  ensureAudio();
+  if (ctx.state === "suspended") ctx.resume();
+  playing = !playing;
+  ctx[playing ? "resume" : "suspend"]();
+  this.classList.toggle("on", playing);
+  this.innerHTML = playing ? "&#10074;&#10074; Pause" : "&#9654; Play riff";
+});
+document.getElementById("bypass").addEventListener("click", function() {
+  if (!ctx) return;
+  bypass = !bypass;
+  window._nodes.wet.gain.value = bypass ? 0 : 1;
+  dry.gain.value = bypass ? 1 : 0;
+  this.classList.toggle("on", bypass);
+});
+
+update();
+</script>
+</body>
+</html>
