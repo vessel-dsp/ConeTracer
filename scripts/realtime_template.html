@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ConeTrace realtime mic move</title>
+<style>
+  :root { color-scheme: dark; --bg:#10141b; --panel:#18202b; --line:#2a3443; --text:#edf2f7; --muted:#95a0ae; --accent:#e4b84a; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { display:grid; grid-template-columns:minmax(320px,420px) minmax(420px,1fr); gap:18px; padding:18px; max-width:1180px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }
+  .titleRow { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .starButton { display:inline-flex; align-items:center; gap:6px; width:auto; flex:0 0 auto; padding:6px 9px; color:#f8fafc; text-decoration:none; background:#242d3a; border:1px solid #344153; border-radius:6px; font-size:12px; font-weight:700; }
+  .starButton:hover { border-color:#e4b84a; color:#fff5c2; }
+  .starButton svg { width:14px; height:14px; fill:#e4b84a; }
+  h2 { font-size:14px; margin:0 0 10px; color:#d7dde6; }
+  .sub, .note { color:var(--muted); font-size:12px; line-height:1.45; }
+  .hidden { display:none !important; }
+  label { display:block; font-size:12px; color:#b7c0cc; margin:12px 0 5px; }
+  select, button, input[type=range] { width:100%; }
+  select, button { background:#242d3a; color:var(--text); border:1px solid #344153; border-radius:6px; padding:8px 10px; font-size:13px; }
+  button { cursor:pointer; font-weight:600; }
+  button.on { background:#285f46; border-color:#3a8a65; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  #pad { position:relative; width:min(100%,380px); aspect-ratio:1.18/1; margin:14px auto 8px; border-radius:8px; overflow:hidden; cursor:crosshair; touch-action:none;
+    background:
+      linear-gradient(90deg, #2f2618 0%, #2a231b 38%, #20242d 100%),
+      linear-gradient(180deg, #1d2632 0%, #111820 100%);
+    border:1px solid #344153;
+    box-shadow:inset 0 0 34px #0007, 0 10px 30px #0005;
+  }
+  #pad::before { content:""; position:absolute; inset:18%; border-radius:6px; border:1px solid #ffffff18; background:linear-gradient(90deg, #f6d84a10, #40bf7310, #246b8e12); }
+  #pad::after { content:"radial offset ->"; position:absolute; left:50%; bottom:8px; transform:translateX(-50%); color:#cbd5e1; font-size:11px; letter-spacing:0; opacity:.76; }
+  #grid { position:absolute; inset:0; width:100%; height:100%; opacity:.45; pointer-events:none; background:transparent; border:0; border-radius:0; }
+  #mic { position:absolute; width:21px; height:21px; border-radius:50%; background:var(--accent); border:2px solid #fff; box-shadow:0 0 16px #e4b84aaa; transform:translate(-50%,-50%); pointer-events:none; }
+  #startHint { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; color:#f8fafc; font-size:13px; font-weight:700; text-align:center; text-shadow:0 2px 10px #000; letter-spacing:0; background:radial-gradient(circle at 50% 50%, #00000010, #00000038 68%, #00000008); transition:opacity .18s ease; }
+  #startHint.hidden { opacity:0; }
+  .axisLabels { display:grid; grid-template-columns:1fr 1fr; gap:8px; color:var(--muted); font-size:11px; margin:4px 0 8px; }
+  .axisLabels span:nth-child(2n) { text-align:right; }
+  .readout { font-size:12px; color:#c4ccd6; font-variant-numeric:tabular-nums; min-height:38px; }
+  canvas { width:100%; background:#0f141c; border:1px solid #263140; border-radius:6px; }
+  #resp { height:220px; }
+  #delta { height:180px; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
+  .metric { background:#111823; border:1px solid #263140; border-radius:6px; padding:9px; }
+  .metric b { display:block; font-size:17px; }
+  .metric span { color:var(--muted); font-size:11px; }
+  .legend { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .sw { width:12px; height:12px; border-radius:3px; display:inline-block; margin-right:4px; }
+  @media (max-width:860px) { main { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <section class="panel">
+    <div class="titleRow">
+      <h1>ConeTrace realtime mic move</h1>
+      <a class="starButton" href="https://github.com/vessel-dsp/ConeTrace" target="_blank" rel="noopener noreferrer" aria-label="Star ConeTrace on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .9l2.1 4.3 4.7.7-3.4 3.3.8 4.7L8 11.7l-4.2 2.2.8-4.7L1.2 5.9l4.7-.7L8 .9z"/></svg>
+        Star
+      </a>
+    </div>
+    <div class="sub">Continuous mic-position cabinet IR modeling in the browser. Drag the control point; ConeTrace regenerates a cabinet IR and updates WebAudio.</div>
+    <div id="pad" aria-label="Position map: horizontal radial offset, vertical grille distance">
+      <canvas id="grid"></canvas>
+      <div id="mic"></div>
+      <div id="startHint">Drag to start monitoring</div>
+    </div>
+    <div class="axisLabels">
+      <span>left = dust-cap center</span><span>right = cone edge</span>
+      <span>top = on grille</span><span>bottom = farther from grille</span>
+    </div>
+    <div class="readout" id="readout"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:#f6d84a"></i>strong</span>
+      <span><i class="sw" style="background:#40bf73"></i>ok</span>
+      <span><i class="sw" style="background:#246b8e"></i>weak</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Controls</h2>
+    <div class="row">
+      <div><label>Mic</label><select id="micSelect"></select></div>
+      <div><label>Position model</label><div class="sub">On-axis only. The pad controls grille distance and radial dust-cap offset.</div></div>
+    </div>
+    <div class="row">
+      <div>
+        <label>IR tail</label>
+        <select id="tailMode">
+          <option value="4096-soft">Full 85 ms, soft</option>
+          <option value="2048-medium" selected>Short 43 ms, medium</option>
+          <option value="1024-tight">Tight 21 ms</option>
+        </select>
+      </div>
+      <div>
+        <label>Cab blend: <span id="blendVal">100</span>%</label>
+        <input id="blend" type="range" min="0" max="100" step="1" value="100">
+      </div>
+    </div>
+    <label>Presence: <span id="presenceVal">3</span></label>
+    <input id="presence" type="range" min="1" max="5" step="1" value="3">
+    <label>Audition IR</label>
+    <select id="auditionMode">
+      <option value="model" selected>ConeTrace simulation (continuous)</option>
+    </select>
+    <button id="bypass">Bypass cab</button>
+    <label>Output volume: <span id="volumeVal">25</span>%</label>
+    <input id="volume" type="range" min="0" max="100" step="1" value="25">
+    <div class="metrics">
+      <div class="metric"><b id="genMs">-</b><span>IR generation</span></div>
+      <div class="metric"><b id="errDb">-</b><span id="errLabel">nearest-grid RMS dB</span></div>
+      <div class="metric"><b id="posText">-</b><span>distance / offset</span></div>
+    </div>
+    <label id="respLabel">ConeTrace IR frequency response</label>
+    <canvas id="resp" width="720" height="260"></canvas>
+    <label id="deltaLabel">ConeTrace - nearest captured grid point</label>
+    <canvas id="delta" width="720" height="210"></canvas>
+    <p class="note" id="pageNote">This is an experience test, not a full validation report. Use the Gradio Validation Grid for exact ConeTrace-vs-real scoring. Here, audio is a browser-synthesized guitar riff through a live ConvolverNode.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+const META = /*__META__*/;
+const BYTES = Uint8Array.from(atob("__WEIGHTS_B64__"), c => c.charCodeAt(0));
+const FLOATS = new Float32Array(BYTES.buffer);
+const ARR = {};
+for (const a of META.arrays) ARR[a.key] = { data: FLOATS.subarray(a.offset, a.offset + a.size), shape: a.shape };
+const SR = META.sr, N_TAPS = META.n_taps, N_FFT = 4096, NBINS = META.n_bins;
+
+function silu(x) { return x / (1 + Math.exp(-x)); }
+function linear(h, keyW, keyB, activate) {
+  const W = ARR[keyW], b = ARR[keyB], outN = W.shape[0], inN = W.shape[1];
+  const out = new Float64Array(outN);
+  for (let o = 0; o < outN; o++) {
+    let s = b.data[o], base = o * inN;
+    for (let i = 0; i < inN; i++) s += W.data[base + i] * h[i];
+    out[o] = activate ? silu(s) : s;
+  }
+  return out;
+}
+function forward(micIdx, distance, offset, angle, presence) {
+  const micEmb = ARR["mic_emb.weight"], cabEmb = ARR["cab_emb.weight"];
+  const h0 = new Float64Array(META.input_dim || ARR["net.0.weight"].shape[1]);
+  h0.set(micEmb.data.subarray(micIdx * 8, micIdx * 8 + 8), 0);
+  h0.set(cabEmb.data.subarray(0, 8), 8);
+  h0[16] = Math.log1p(distance) / META.dist_norm;
+  h0[17] = offset / META.off_norm;
+  h0[18] = angle / 90;
+  if (META.condition_presence && h0.length > 19) h0[19] = (presence - 1) / 4;
+  let h = linear(h0, "net.0.weight", "net.0.bias", true);
+  h = linear(h, "net.3.weight", "net.3.bias", true);
+  h = linear(h, "net.6.weight", "net.6.bias", true);
+  return linear(h, "net.8.weight", "net.8.bias", false);
+}
+function fft(re, im, inv) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (inv ? 2 : -2) * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len/2; k++) {
+        const ur = re[i+k], ui = im[i+k];
+        const vr = re[i+k+len/2]*cr - im[i+k+len/2]*ci;
+        const vi = re[i+k+len/2]*ci + im[i+k+len/2]*cr;
+        re[i+k] = ur + vr; im[i+k] = ui + vi;
+        re[i+k+len/2] = ur - vr; im[i+k+len/2] = ui - vi;
+        const ncr = cr*wr - ci*wi; ci = cr*wi + ci*wr; cr = ncr;
+      }
+    }
+  }
+  if (inv) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+function minphaseIR(logmag) {
+  const re = new Float64Array(N_FFT), im = new Float64Array(N_FFT);
+  for (let k = 0; k < NBINS; k++) re[k] = logmag[k];
+  for (let k = NBINS; k < N_FFT; k++) re[k] = logmag[N_FFT - k];
+  fft(re, im, true);
+  im.fill(0);
+  for (let k = 1; k < N_FFT/2; k++) re[k] *= 2;
+  for (let k = N_FFT/2 + 1; k < N_FFT; k++) re[k] = 0;
+  fft(re, im, false);
+  for (let k = 0; k < N_FFT; k++) {
+    const m = Math.exp(re[k]);
+    re[k] = m * Math.cos(im[k]);
+    im[k] = m * Math.sin(im[k]);
+  }
+  fft(re, im, true);
+  const ir = new Float32Array(N_TAPS);
+  let peak = 0;
+  for (let i = 0; i < N_TAPS; i++) { ir[i] = re[i]; peak = Math.max(peak, Math.abs(ir[i])); }
+  const nf = N_TAPS >> 2;
+  for (let i = 0; i < nf; i++) ir[N_TAPS - 1 - i] *= 0.5 - 0.5 * Math.cos(Math.PI * i / nf);
+  const g = 0.98 / Math.max(peak, 1e-9);
+  for (let i = 0; i < N_TAPS; i++) ir[i] *= g;
+  return ir;
+}
+function logmagFromIR(ir) {
+  const re = new Float64Array(N_FFT), im = new Float64Array(N_FFT);
+  const n = Math.min(ir.length, N_FFT);
+  for (let i = 0; i < n; i++) re[i] = ir[i];
+  fft(re, im, false);
+  const out = new Float64Array(NBINS);
+  for (let k = 0; k < NBINS; k++) out[k] = Math.log(Math.hypot(re[k], im[k]) + 1e-8);
+  return out;
+}
+function normalizePeak(ir) {
+  let peak = 0;
+  for (let i = 0; i < ir.length; i++) peak = Math.max(peak, Math.abs(ir[i]));
+  if (peak < 1e-9) return ir;
+  const out = new Float32Array(ir.length), g = 0.98 / peak;
+  for (let i = 0; i < ir.length; i++) out[i] = ir[i] * g;
+  return out;
+}
+function applyTailMode(ir) {
+  const mode = document.getElementById("tailMode").value;
+  const [lenTxt, curve] = mode.split("-");
+  const keep = Math.min(ir.length, +lenTxt);
+  const out = new Float32Array(keep);
+  for (let i = 0; i < keep; i++) out[i] = ir[i];
+  const fadeFrac = curve === "tight" ? 0.65 : (curve === "medium" ? 0.45 : 0.25);
+  const start = Math.max(8, Math.floor(keep * (1 - fadeFrac)));
+  for (let i = start; i < keep; i++) {
+    const x = (i - start) / Math.max(1, keep - start - 1);
+    const g = curve === "tight"
+      ? Math.exp(-7 * x)
+      : 0.5 + 0.5 * Math.cos(Math.PI * x);
+    out[i] *= g;
+  }
+  return out;
+}
+function generate(distance, offset, angle, presence) {
+  const t0 = performance.now();
+  const logmag = forward(+micSelect.value, distance, offset, angle, presence);
+  const ir = applyTailMode(minphaseIR(logmag));
+  return { ir, logmag, ms: performance.now() - t0 };
+}
+function capturedReference(v) {
+  if (!v || !v.ir_key || !ARR[v.ir_key]) return null;
+  const raw = ARR[v.ir_key].data;
+  const full = new Float32Array(raw.length);
+  full.set(raw);
+  return {
+    ir: normalizePeak(applyTailMode(full)),
+    logmag: logmagFromIR(full),
+    ms: 0,
+    file: v.file || "",
+  };
+}
+
+let ctx, src, convA, convB, gainA, gainB, dryGain, masterGain, active = 0, bypass = false;
+function riffBuffer(sr) {
+  const notes = [82.4,82.4,98,110,82.4,73.4,82.4,123.5,110,98,82.4,146.8,123.5,110];
+  const noteLen = 0.22, total = notes.length * noteLen + 1.5;
+  const out = new Float32Array(Math.floor(total * sr));
+  for (let n = 0; n < notes.length; n++) {
+    const f = notes[n], start = Math.floor(n * noteLen * sr), delay = Math.max(2, Math.floor(sr / f));
+    const dl = new Float32Array(delay);
+    for (let i = 0; i < delay; i++) dl[i] = Math.random() * 2 - 1;
+    let p = 0;
+    for (let i = 0; i < Math.floor(sr * 0.85) && start + i < out.length; i++) {
+      const next = (p + 1) % delay, v = dl[p];
+      dl[p] = 0.993 * 0.5 * (dl[p] + dl[next]);
+      out[start+i] += Math.tanh(v * 2.5) * Math.exp(-i / (sr * 0.9)) * 0.32;
+      p = next;
+    }
+  }
+  return out;
+}
+function ensureAudio() {
+  if (ctx) return;
+  ctx = new AudioContext({ sampleRate: SR });
+  src = ctx.createBufferSource();
+  const riff = riffBuffer(ctx.sampleRate);
+  const b = ctx.createBuffer(1, riff.length, ctx.sampleRate);
+  b.getChannelData(0).set(riff);
+  src.buffer = b; src.loop = true;
+  convA = ctx.createConvolver(); convB = ctx.createConvolver(); convA.normalize = convB.normalize = false;
+  gainA = ctx.createGain(); gainB = ctx.createGain(); dryGain = ctx.createGain(); masterGain = ctx.createGain();
+  gainA.gain.value = 1; gainB.gain.value = 0; dryGain.gain.value = 0;
+  masterGain.gain.value = +document.getElementById("volume").value / 100;
+  src.connect(convA); src.connect(convB); src.connect(dryGain);
+  convA.connect(gainA); convB.connect(gainB);
+  gainA.connect(masterGain); gainB.connect(masterGain); dryGain.connect(masterGain);
+  masterGain.connect(ctx.destination);
+  src.start();
+}
+function setConvolver(ir) {
+  if (!ctx) return;
+  const b = ctx.createBuffer(1, ir.length, SR);
+  b.getChannelData(0).set(ir);
+  const now = ctx.currentTime, fade = 0.035;
+  const wet = +blendEl.value / 100;
+  dryGain.gain.linearRampToValueAtTime(bypass ? 1 : 1 - wet, now + fade);
+  if (active === 0) {
+    convB.buffer = b;
+    gainB.gain.cancelScheduledValues(now); gainA.gain.cancelScheduledValues(now);
+    gainB.gain.setValueAtTime(gainB.gain.value, now); gainA.gain.setValueAtTime(gainA.gain.value, now);
+    gainB.gain.linearRampToValueAtTime(bypass ? 0 : wet, now + fade);
+    gainA.gain.linearRampToValueAtTime(0, now + fade);
+    active = 1;
+  } else {
+    convA.buffer = b;
+    gainA.gain.cancelScheduledValues(now); gainB.gain.cancelScheduledValues(now);
+    gainA.gain.setValueAtTime(gainA.gain.value, now); gainB.gain.setValueAtTime(gainB.gain.value, now);
+    gainA.gain.linearRampToValueAtTime(bypass ? 0 : wet, now + fade);
+    gainB.gain.linearRampToValueAtTime(0, now + fade);
+    active = 0;
+  }
+}
+
+const pad = document.getElementById("pad"), mic = document.getElementById("mic"), grid = document.getElementById("grid"), startHint = document.getElementById("startHint");
+const micSelect = document.getElementById("micSelect"), presenceEl = document.getElementById("presence");
+const tailMode = document.getElementById("tailMode"), blendEl = document.getElementById("blend"), volumeEl = document.getElementById("volume"), auditionModeEl = document.getElementById("auditionMode");
+const resp = document.getElementById("resp").getContext("2d"), delta = document.getElementById("delta").getContext("2d");
+META.mics.forEach((m, i) => micSelect.add(new Option(m, i)));
+const HAS_REFS = Object.values(META.validation || {}).some(rows => rows.length > 0);
+if (!HAS_REFS) {
+  document.getElementById("errLabel").textContent = "reference IRs local only";
+  document.getElementById("deltaLabel").textContent = "Public page: reference IRs are not embedded";
+  document.getElementById("pageNote").textContent = "This public GitHub Pages build embeds ConeTrace model weights only. Captured third-party reference IRs and raw audio are not redistributed.";
+} else {
+  auditionModeEl.add(new Option("Nearest captured open IR (snaps to grid)", "captured"));
+}
+presenceEl.value = META.presence || 3;
+document.getElementById("presenceVal").textContent = presenceEl.value;
+if (!META.condition_presence) presenceEl.disabled = true;
+let distance = 25.4, offset = 32, lastLogmag = null;
+const MAP = { left: 0.18, right: 0.82, top: 0.18, bottom: 0.82 };
+const MAP_W = MAP.right - MAP.left;
+const MAP_H = MAP.bottom - MAP.top;
+
+function colorForErr(e) {
+  if (!isFinite(e)) return "rgba(255,255,255,.12)";
+  if (e < 1.5) return "rgba(246,216,74,.72)";
+  if (e < 2.5) return "rgba(64,191,115,.64)";
+  if (e < 4.0) return "rgba(36,107,142,.68)";
+  return "rgba(88,45,135,.75)";
+}
+function nearestValidation() {
+  const rows = META.validation[META.mics[+micSelect.value]] || [];
+  let best = null, bestD = Infinity;
+  for (const r of rows) {
+    const d = Math.hypot((r.distance - distance) / 50.8, (r.offset - offset) / 83);
+    if (d < bestD) { bestD = d; best = r; }
+  }
+  return best;
+}
+function resizeGridCanvas() {
+  const box = grid.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(box.width * scale));
+  const height = Math.max(1, Math.round(box.height * scale));
+  if (grid.width !== width || grid.height !== height) {
+    grid.width = width;
+    grid.height = height;
+  }
+  const g = grid.getContext("2d");
+  g.setTransform(scale, 0, 0, scale, 0, 0);
+  return { g, w: box.width, h: box.height };
+}
+function drawGrid() {
+  const { g, w, h } = resizeGridCanvas();
+  g.clearRect(0,0,w,h);
+  g.strokeStyle = "rgba(203,213,225,.16)";
+  g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const x = w * (MAP.left + MAP_W * i / 4);
+    const y = h * (MAP.top + MAP_H * i / 4);
+    g.beginPath(); g.moveTo(x, h * MAP.top); g.lineTo(x, h * MAP.bottom); g.stroke();
+    g.beginPath(); g.moveTo(w * MAP.left, y); g.lineTo(w * MAP.right, y); g.stroke();
+  }
+  g.fillStyle = "rgba(203,213,225,.72)";
+  g.font = "13px system-ui";
+  g.fillText("on grille", w * (MAP.left + 0.01), h * (MAP.top - 0.03));
+  g.save();
+  g.translate(w * 0.08, h * 0.57);
+  g.rotate(-Math.PI / 2);
+  g.fillText("distance from grille", 0, 0);
+  g.restore();
+  const rows = META.validation[META.mics[+micSelect.value]] || [];
+  for (const r of rows) {
+    const x = w * (MAP.left + MAP_W * r.offset / 83);
+    const y = h * (MAP.top + MAP_H * r.distance / 50.8);
+    g.fillStyle = colorForErr(r.guitar);
+    g.beginPath(); g.arc(x, y, 12, 0, Math.PI * 2); g.fill();
+  }
+}
+function updateMicPosition() {
+  mic.style.left = `${(MAP.left + MAP_W * offset / 83) * 100}%`;
+  mic.style.top = `${(MAP.top + MAP_H * distance / 50.8) * 100}%`;
+}
+function padToPosition(ev) {
+  const r = pad.getBoundingClientRect();
+  const x = Math.max(0, Math.min(1, ((ev.clientX ?? ev.touches[0].clientX) - r.left) / r.width));
+  const y = Math.max(0, Math.min(1, ((ev.clientY ?? ev.touches[0].clientY) - r.top) / r.height));
+  const px = Math.max(MAP.left, Math.min(MAP.right, x));
+  const py = Math.max(MAP.top, Math.min(MAP.bottom, y));
+  offset = (px - MAP.left) / MAP_W * 83;
+  distance = (py - MAP.top) / MAP_H * 50.8;
+  updateMicPosition();
+  scheduleUpdate();
+}
+function drawResponse(logmag) {
+  const w = resp.canvas.width, h = resp.canvas.height;
+  resp.clearRect(0,0,w,h);
+  resp.strokeStyle = "#293544"; resp.lineWidth = 1;
+  for (const db of [-60,-40,-20,0]) { const y = 20 + (-db / 70) * (h-36); resp.beginPath(); resp.moveTo(0,y); resp.lineTo(w,y); resp.stroke(); }
+  const ref = Math.max(...logmag);
+  resp.strokeStyle = "#e4b84a"; resp.lineWidth = 2; resp.beginPath();
+  for (let px = 0; px < w; px++) {
+    const f = 60 * Math.pow(12000/60, px/(w-1));
+    const bin = Math.min(NBINS-1, Math.round(f / (SR/2) * (NBINS-1)));
+    const db = (logmag[bin] - ref) * 8.686;
+    const y = 16 + Math.min(h-32, Math.max(0, -db / 70 * (h-36)));
+    px ? resp.lineTo(px,y) : resp.moveTo(px,y);
+  }
+  resp.stroke();
+}
+function drawDelta(logmag) {
+  const v = nearestValidation();
+  const w = delta.canvas.width, h = delta.canvas.height;
+  delta.clearRect(0,0,w,h);
+  if (!HAS_REFS) {
+    delta.fillStyle = "#9ca3af";
+    delta.font = "15px system-ui";
+    delta.fillText("Reference IRs are available only in the local validation build.", 18, 36);
+    delta.font = "13px system-ui";
+    delta.fillText("The public page runs the continuous ConeTrace model without redistributing captured IR audio.", 18, 62);
+    return;
+  }
+  if (!v || !lastLogmag) return;
+  delta.strokeStyle = "#334155"; delta.lineWidth = 1;
+  for (const db of [-12,0,12]) { const y = h/2 - db/24*(h-32); delta.beginPath(); delta.moveTo(0,y); delta.lineTo(w,y); delta.stroke(); }
+  delta.fillStyle = "#9ca3af"; delta.font = "13px system-ui"; delta.fillText(`nearest captured: ${v.distance}mm / ${v.offset}mm · ${v.guitar.toFixed(2)} dB`, 12, 20);
+  delta.strokeStyle = "#60a5fa"; delta.lineWidth = 2; delta.beginPath();
+    const nearest = forward(+micSelect.value, v.distance, v.offset, 0, +presenceEl.value);
+  for (let px = 0; px < w; px++) {
+    const f = 60 * Math.pow(12000/60, px/(w-1));
+    const bin = Math.min(NBINS-1, Math.round(f / (SR/2) * (NBINS-1)));
+    const db = Math.max(-18, Math.min(18, (logmag[bin] - nearest[bin]) * 8.686));
+    const y = h/2 - db/36*(h-36);
+    px ? delta.lineTo(px,y) : delta.moveTo(px,y);
+  }
+  delta.stroke();
+}
+let queued = false, lastRun = 0;
+function scheduleUpdate() {
+  if (queued) return;
+  queued = true;
+  setTimeout(() => {
+    queued = false;
+    const t0 = performance.now();
+    const out = generate(distance, offset, 0, +presenceEl.value);
+    const v = nearestValidation();
+    const ref = capturedReference(v);
+    const useCaptured = auditionModeEl.value === "captured" && ref;
+    const audition = useCaptured ? ref : out;
+    lastLogmag = out.logmag;
+    setConvolver(audition.ir);
+    drawResponse(audition.logmag); drawDelta(out.logmag);
+    document.getElementById("respLabel").textContent = useCaptured ? "Nearest captured IR frequency response" : "ConeTrace IR frequency response";
+    document.getElementById("genMs").textContent = useCaptured ? "ref" : `${out.ms.toFixed(0)} ms`;
+    document.getElementById("errDb").textContent = v ? `${v.guitar.toFixed(2)} dB` : "-";
+    document.getElementById("posText").textContent = `${distance.toFixed(1)} / ${offset.toFixed(1)}`;
+    const source = useCaptured ? `captured: ${v.distance}mm / ${v.offset}mm` : "model simulation";
+    document.getElementById("readout").textContent = `distance ${distance.toFixed(1)} mm from grille · radial offset ${offset.toFixed(1)} mm from dust-cap center · presence ${presenceEl.value} · ${source}`;
+    lastRun = t0;
+  }, Math.max(0, 70 - (performance.now() - lastRun)));
+}
+let dragging = false;
+pad.addEventListener("pointerdown", e => {
+  dragging = true;
+  ensureAudio();
+  ctx.resume();
+  startHint.classList.add("hidden");
+  padToPosition(e);
+});
+window.addEventListener("pointermove", e => { if (dragging) padToPosition(e); });
+window.addEventListener("pointerup", () => dragging = false);
+window.addEventListener("resize", () => { updateMicPosition(); drawGrid(); });
+micSelect.addEventListener("change", () => { drawGrid(); scheduleUpdate(); });
+presenceEl.addEventListener("input", () => { document.getElementById("presenceVal").textContent = presenceEl.value; scheduleUpdate(); });
+tailMode.addEventListener("change", scheduleUpdate);
+auditionModeEl.addEventListener("change", scheduleUpdate);
+blendEl.addEventListener("input", () => {
+  document.getElementById("blendVal").textContent = blendEl.value;
+  if (!ctx) return;
+  const wet = +blendEl.value / 100;
+  const now = ctx.currentTime;
+  dryGain.gain.linearRampToValueAtTime(bypass ? 1 : 1 - wet, now + .04);
+  gainA.gain.linearRampToValueAtTime(bypass ? 0 : (active === 0 ? wet : 0), now + .04);
+  gainB.gain.linearRampToValueAtTime(bypass ? 0 : (active === 1 ? wet : 0), now + .04);
+});
+volumeEl.addEventListener("input", () => {
+  document.getElementById("volumeVal").textContent = volumeEl.value;
+  if (!ctx) return;
+  masterGain.gain.linearRampToValueAtTime(+volumeEl.value / 100, ctx.currentTime + .03);
+});
+document.getElementById("bypass").addEventListener("click", function() {
+  ensureAudio();
+  bypass = !bypass;
+  const now = ctx.currentTime;
+  dryGain.gain.linearRampToValueAtTime(bypass ? 1 : 0, now + .04);
+  const wet = +blendEl.value / 100;
+  gainA.gain.linearRampToValueAtTime(bypass ? 0 : (active === 0 ? wet : 0), now + .04);
+  gainB.gain.linearRampToValueAtTime(bypass ? 0 : (active === 1 ? wet : 0), now + .04);
+  this.classList.toggle("on", bypass);
+  this.textContent = bypass ? "Cab bypassed" : "Bypass cab";
+});
+updateMicPosition(); drawGrid(); scheduleUpdate();
+</script>
+</body>
+</html>

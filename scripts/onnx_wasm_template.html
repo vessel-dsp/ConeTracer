@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ConeTrace ONNX WASM runtime</title>
+<style>
+  :root { color-scheme: dark; --bg:#10141b; --panel:#18202b; --line:#2a3443; --text:#edf2f7; --muted:#95a0ae; --accent:#e4b84a; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { display:grid; grid-template-columns:minmax(320px,420px) minmax(420px,1fr); gap:18px; padding:18px; max-width:1180px; margin:0 auto; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }
+  .titleRow { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .starButton { display:inline-flex; align-items:center; gap:6px; width:auto; flex:0 0 auto; padding:6px 9px; color:#f8fafc; text-decoration:none; background:#242d3a; border:1px solid #344153; border-radius:6px; font-size:12px; font-weight:700; }
+  .starButton:hover { border-color:#e4b84a; color:#fff5c2; }
+  .starButton svg { width:14px; height:14px; fill:#e4b84a; }
+  .sub, .note { color:var(--muted); font-size:12px; line-height:1.45; }
+  label { display:block; font-size:12px; color:#b7c0cc; margin:12px 0 5px; }
+  select, button, input[type=range] { width:100%; }
+  select, button { background:#242d3a; color:var(--text); border:1px solid #344153; border-radius:6px; padding:8px 10px; font-size:13px; }
+  button { cursor:pointer; font-weight:600; }
+  button.on { background:#285f46; border-color:#3a8a65; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  #pad { position:relative; width:min(100%,380px); aspect-ratio:1.18/1; margin:14px auto 8px; border-radius:8px; overflow:hidden; cursor:crosshair; touch-action:none;
+    background:linear-gradient(90deg, #2f2618 0%, #2a231b 38%, #20242d 100%); border:1px solid #344153; box-shadow:inset 0 0 34px #0007, 0 10px 30px #0005; }
+  #pad::before { content:""; position:absolute; inset:18%; border-radius:6px; border:1px solid #ffffff18; background:linear-gradient(90deg, #f6d84a10, #40bf7310, #246b8e12); }
+  #pad::after { content:"radial offset ->"; position:absolute; left:50%; bottom:8px; transform:translateX(-50%); color:#cbd5e1; font-size:11px; opacity:.76; }
+  #grid { position:absolute; inset:0; width:100%; height:100%; opacity:.45; pointer-events:none; background:transparent; border:0; border-radius:0; }
+  #mic { position:absolute; width:21px; height:21px; border-radius:50%; background:var(--accent); border:2px solid #fff; box-shadow:0 0 16px #e4b84aaa; transform:translate(-50%,-50%); pointer-events:none; }
+  #startHint { position:absolute; inset:0; display:grid; place-items:center; pointer-events:none; color:#f8fafc; font-size:13px; font-weight:700; text-align:center; text-shadow:0 2px 10px #000; background:radial-gradient(circle at 50% 50%, #00000010, #00000038 68%, #00000008); transition:opacity .18s ease; }
+  #startHint.hidden { opacity:0; }
+  .axisLabels { display:grid; grid-template-columns:1fr 1fr; gap:8px; color:var(--muted); font-size:11px; margin:4px 0 8px; }
+  .axisLabels span:nth-child(2n) { text-align:right; }
+  .readout { font-size:12px; color:#c4ccd6; font-variant-numeric:tabular-nums; min-height:38px; }
+  canvas { width:100%; background:#0f141c; border:1px solid #263140; border-radius:6px; }
+  #resp { height:260px; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
+  .metric { background:#111823; border:1px solid #263140; border-radius:6px; padding:9px; }
+  .metric b { display:block; font-size:17px; }
+  .metric span { color:var(--muted); font-size:11px; }
+  @media (max-width:860px) { main { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <section class="panel">
+    <div class="titleRow">
+      <h1>ConeTrace ONNX WASM runtime</h1>
+      <a class="starButton" href="https://github.com/vessel-dsp/ConeTrace" target="_blank" rel="noopener noreferrer" aria-label="Star ConeTrace on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 .9l2.1 4.3 4.7.7-3.4 3.3.8 4.7L8 11.7l-4.2 2.2.8-4.7L1.2 5.9l4.7-.7L8 .9z"/></svg>
+        Star
+      </a>
+    </div>
+    <div class="sub">Loads the exported ONNX checkpoint with ONNX Runtime Web/WASM. Drag the control point to regenerate a cabinet IR.</div>
+    <div id="pad" aria-label="Position map: horizontal radial offset, vertical grille distance">
+      <canvas id="grid"></canvas>
+      <div id="mic"></div>
+      <div id="startHint">Drag to start monitoring</div>
+    </div>
+    <div class="axisLabels">
+      <span>left = dust-cap center</span><span>right = cone edge</span>
+      <span>top = on grille</span><span>bottom = farther from grille</span>
+    </div>
+    <div class="readout" id="readout"></div>
+  </section>
+  <section class="panel">
+    <div class="row">
+      <div><label>Mic</label><select id="micSelect"></select></div>
+      <div><label>Runtime</label><div class="sub" id="runtimeStatus">loading ONNX Runtime Web...</div></div>
+    </div>
+    <div class="row">
+      <div><label>IR tail</label><select id="tailMode"><option value="2048-medium">Short 43 ms, medium</option><option value="4096-gentle">Full 85 ms, gentle</option><option value="1024-tight">Tight 21 ms</option></select></div>
+      <div><label>Cab blend: <span id="blendVal">100</span>%</label><input id="blend" type="range" min="0" max="100" value="100"></div>
+    </div>
+    <label>Presence: <span id="presenceVal">3</span></label><input id="presence" type="range" min="1" max="5" step="1" value="3">
+    <button id="bypass">Bypass cab</button>
+    <label>Output volume: <span id="volumeVal">25</span>%</label><input id="volume" type="range" min="0" max="100" value="25">
+    <div class="metrics">
+      <div class="metric"><b id="genMs">-</b><span>ONNX + IR generation</span></div>
+      <div class="metric"><b id="posText">-</b><span>distance / offset</span></div>
+      <div class="metric"><b id="modelText">ONNX</b><span>WASM runtime</span></div>
+    </div>
+    <label>ConeTrace ONNX frequency response</label>
+    <canvas id="resp" width="900" height="260"></canvas>
+    <p class="note">This page loads <code>assets/conetrace-godscab-v0.1.onnx</code>. It does not embed or redistribute captured reference IRs.</p>
+  </section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+const META = /*__META__*/;
+const ONNX_URL = "__ONNX_URL__";
+const SR = META.sr, N_TAPS = META.n_taps, N_FFT = 4096, NBINS = META.n_bins;
+let sessionPromise = null;
+
+function fft(re, im, inv) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (inv ? 2 : -2) * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len/2; k++) {
+        const ur = re[i+k], ui = im[i+k];
+        const vr = re[i+k+len/2]*cr - im[i+k+len/2]*ci;
+        const vi = re[i+k+len/2]*ci + im[i+k+len/2]*cr;
+        re[i+k] = ur + vr; im[i+k] = ui + vi;
+        re[i+k+len/2] = ur - vr; im[i+k+len/2] = ui - vi;
+        const ncr = cr*wr - ci*wi; ci = cr*wi + ci*wr; cr = ncr;
+      }
+    }
+  }
+  if (inv) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+}
+function minphaseIR(logmag) {
+  const re = new Float64Array(N_FFT), im = new Float64Array(N_FFT);
+  for (let k = 0; k < NBINS; k++) re[k] = logmag[k];
+  for (let k = NBINS; k < N_FFT; k++) re[k] = logmag[N_FFT - k];
+  fft(re, im, true);
+  im.fill(0);
+  for (let k = 1; k < N_FFT/2; k++) re[k] *= 2;
+  for (let k = N_FFT/2 + 1; k < N_FFT; k++) re[k] = 0;
+  fft(re, im, false);
+  for (let k = 0; k < N_FFT; k++) {
+    const m = Math.exp(re[k]);
+    re[k] = m * Math.cos(im[k]);
+    im[k] = m * Math.sin(im[k]);
+  }
+  fft(re, im, true);
+  const ir = new Float32Array(N_TAPS);
+  let peak = 0;
+  for (let i = 0; i < N_TAPS; i++) { ir[i] = re[i]; peak = Math.max(peak, Math.abs(ir[i])); }
+  const nf = N_TAPS >> 2;
+  for (let i = 0; i < nf; i++) ir[N_TAPS - 1 - i] *= 0.5 - 0.5 * Math.cos(Math.PI * i / nf);
+  const g = 0.98 / Math.max(peak, 1e-9);
+  for (let i = 0; i < N_TAPS; i++) ir[i] *= g;
+  return ir;
+}
+function applyTailMode(ir) {
+  const [lenTxt, curve] = tailMode.value.split("-");
+  const keep = Math.min(ir.length, +lenTxt);
+  const out = new Float32Array(keep);
+  out.set(ir.subarray(0, keep));
+  const fadeFrac = curve === "tight" ? 0.65 : (curve === "medium" ? 0.45 : 0.25);
+  const start = Math.max(8, Math.floor(keep * (1 - fadeFrac)));
+  for (let i = start; i < keep; i++) {
+    const x = (i - start) / Math.max(1, keep - start - 1);
+    out[i] *= curve === "tight" ? Math.exp(-7 * x) : 0.5 + 0.5 * Math.cos(Math.PI * x);
+  }
+  return out;
+}
+async function loadSession() {
+  if (sessionPromise) return sessionPromise;
+  ort.env.wasm.numThreads = 1;
+  sessionPromise = ort.InferenceSession.create(ONNX_URL, { executionProviders: ["wasm"] });
+  const session = await sessionPromise;
+  runtimeStatus.textContent = `ready: ${ONNX_URL}`;
+  return session;
+}
+async function forwardOnnx(micIdx, distanceMm, offsetMm, angleDeg, presence) {
+  const session = await loadSession();
+  const feeds = {
+    mic_idx: new ort.Tensor("int64", BigInt64Array.from([BigInt(micIdx)]), [1]),
+    cab_idx: new ort.Tensor("int64", BigInt64Array.from([0n]), [1]),
+    distance: new ort.Tensor("float32", Float32Array.from([Math.log1p(distanceMm) / META.dist_norm]), [1]),
+    offset: new ort.Tensor("float32", Float32Array.from([offsetMm / META.off_norm]), [1]),
+    angle: new ort.Tensor("float32", Float32Array.from([angleDeg / 90]), [1]),
+    extra: new ort.Tensor("float32", Float32Array.from([(presence - 1) / 4]), [1, Math.max(1, META.n_extra || 0)]),
+  };
+  const out = await session.run(feeds);
+  return out.logmag.data;
+}
+
+let ctx, src, convA, convB, gainA, gainB, dryGain, masterGain, active = 0, bypass = false;
+function riffBuffer(sr) {
+  const notes = [82.4,82.4,98,110,82.4,73.4,82.4,123.5,110,98,82.4,146.8,123.5,110];
+  const noteLen = 0.22, total = notes.length * noteLen + 1.5;
+  const out = new Float32Array(Math.floor(total * sr));
+  for (let n = 0; n < notes.length; n++) {
+    const f = notes[n], start = Math.floor(n * noteLen * sr), delay = Math.max(2, Math.floor(sr / f));
+    const dl = new Float32Array(delay);
+    for (let i = 0; i < delay; i++) dl[i] = Math.random() * 2 - 1;
+    let p = 0;
+    for (let i = 0; i < Math.floor(sr * 0.85) && start + i < out.length; i++) {
+      const next = (p + 1) % delay, v = dl[p];
+      dl[p] = 0.993 * 0.5 * (dl[p] + dl[next]);
+      out[start+i] += Math.tanh(v * 2.5) * Math.exp(-i / (sr * 0.9)) * 0.32;
+      p = next;
+    }
+  }
+  return out;
+}
+function ensureAudio() {
+  if (ctx) return;
+  ctx = new AudioContext({ sampleRate: SR });
+  src = ctx.createBufferSource();
+  const riff = riffBuffer(ctx.sampleRate);
+  const b = ctx.createBuffer(1, riff.length, ctx.sampleRate);
+  b.getChannelData(0).set(riff);
+  src.buffer = b; src.loop = true;
+  convA = ctx.createConvolver(); convB = ctx.createConvolver(); convA.normalize = convB.normalize = false;
+  gainA = ctx.createGain(); gainB = ctx.createGain(); dryGain = ctx.createGain(); masterGain = ctx.createGain();
+  gainA.gain.value = 1; gainB.gain.value = 0; dryGain.gain.value = 0; masterGain.gain.value = +volumeEl.value / 100;
+  src.connect(convA); src.connect(convB); src.connect(dryGain);
+  convA.connect(gainA); convB.connect(gainB); gainA.connect(masterGain); gainB.connect(masterGain); dryGain.connect(masterGain); masterGain.connect(ctx.destination);
+  src.start();
+}
+function setConvolver(ir) {
+  if (!ctx) return;
+  const b = ctx.createBuffer(1, ir.length, SR);
+  b.getChannelData(0).set(ir);
+  const now = ctx.currentTime, fade = 0.035, wet = +blendEl.value / 100;
+  dryGain.gain.linearRampToValueAtTime(bypass ? 1 : 1 - wet, now + fade);
+  if (active === 0) {
+    convB.buffer = b; gainB.gain.linearRampToValueAtTime(bypass ? 0 : wet, now + fade); gainA.gain.linearRampToValueAtTime(0, now + fade); active = 1;
+  } else {
+    convA.buffer = b; gainA.gain.linearRampToValueAtTime(bypass ? 0 : wet, now + fade); gainB.gain.linearRampToValueAtTime(0, now + fade); active = 0;
+  }
+}
+function drawResponse(logmag) {
+  const w = resp.canvas.width, h = resp.canvas.height;
+  resp.clearRect(0,0,w,h);
+  resp.strokeStyle = "#293544"; resp.lineWidth = 1;
+  for (const db of [-60,-40,-20,0]) { const y = 20 + (-db / 70) * (h-36); resp.beginPath(); resp.moveTo(0,y); resp.lineTo(w,y); resp.stroke(); }
+  const ref = Math.max(...logmag);
+  resp.strokeStyle = "#e4b84a"; resp.lineWidth = 2; resp.beginPath();
+  for (let px = 0; px < w; px++) {
+    const f = 60 * Math.pow(12000/60, px/(w-1));
+    const bin = Math.min(NBINS-1, Math.round(f / (SR/2) * (NBINS-1)));
+    const db = (logmag[bin] - ref) * 8.686;
+    const y = 16 + Math.min(h-32, Math.max(0, -db / 70 * (h-36)));
+    px ? resp.lineTo(px,y) : resp.moveTo(px,y);
+  }
+  resp.stroke();
+}
+const pad = document.getElementById("pad"), mic = document.getElementById("mic"), grid = document.getElementById("grid"), startHint = document.getElementById("startHint");
+const micSelect = document.getElementById("micSelect"), presenceEl = document.getElementById("presence"), tailMode = document.getElementById("tailMode");
+const blendEl = document.getElementById("blend"), volumeEl = document.getElementById("volume"), runtimeStatus = document.getElementById("runtimeStatus");
+const resp = document.getElementById("resp").getContext("2d");
+META.mics.forEach((m, i) => micSelect.add(new Option(m, i)));
+presenceEl.value = META.presence || 3;
+document.getElementById("presenceVal").textContent = presenceEl.value;
+let distance = 25.4, offset = 32, pending = false, seq = 0;
+const MAP = { left: 0.18, right: 0.82, top: 0.18, bottom: 0.82 };
+const MAP_W = MAP.right - MAP.left, MAP_H = MAP.bottom - MAP.top;
+function resizeGridCanvas() {
+  const box = grid.getBoundingClientRect(), scale = window.devicePixelRatio || 1;
+  grid.width = Math.max(1, Math.round(box.width * scale)); grid.height = Math.max(1, Math.round(box.height * scale));
+  const g = grid.getContext("2d"); g.setTransform(scale,0,0,scale,0,0);
+  return { g, w: box.width, h: box.height };
+}
+function drawGrid() {
+  const { g, w, h } = resizeGridCanvas();
+  g.clearRect(0,0,w,h); g.strokeStyle = "rgba(203,213,225,.16)"; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const x = w * (MAP.left + MAP_W * i / 4), y = h * (MAP.top + MAP_H * i / 4);
+    g.beginPath(); g.moveTo(x, h * MAP.top); g.lineTo(x, h * MAP.bottom); g.stroke();
+    g.beginPath(); g.moveTo(w * MAP.left, y); g.lineTo(w * MAP.right, y); g.stroke();
+  }
+  g.fillStyle = "rgba(203,213,225,.72)"; g.font = "13px system-ui"; g.fillText("on grille", w * (MAP.left + 0.01), h * (MAP.top - 0.03));
+  g.save(); g.translate(w * 0.08, h * 0.57); g.rotate(-Math.PI / 2); g.fillText("distance from grille", 0, 0); g.restore();
+  for (const dist of [0,25.4,50.8]) for (const off of [0,32,57,83]) {
+    const x = w * (MAP.left + MAP_W * off / 83), y = h * (MAP.top + MAP_H * dist / 50.8);
+    g.fillStyle = "rgba(246,216,74,.55)"; g.beginPath(); g.arc(x,y,12,0,Math.PI*2); g.fill();
+  }
+}
+function updateMicPosition() {
+  mic.style.left = `${(MAP.left + MAP_W * offset / 83) * 100}%`;
+  mic.style.top = `${(MAP.top + MAP_H * distance / 50.8) * 100}%`;
+}
+function padToPosition(ev) {
+  const r = pad.getBoundingClientRect();
+  const x = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+  const y = Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height));
+  const px = Math.max(MAP.left, Math.min(MAP.right, x)), py = Math.max(MAP.top, Math.min(MAP.bottom, y));
+  offset = (px - MAP.left) / MAP_W * 83; distance = (py - MAP.top) / MAP_H * 50.8;
+  updateMicPosition(); scheduleUpdate();
+}
+async function runUpdate(mySeq) {
+  const t0 = performance.now();
+  const logmag = await forwardOnnx(+micSelect.value, distance, offset, 0, +presenceEl.value);
+  if (mySeq !== seq) return;
+  const ir = applyTailMode(minphaseIR(logmag));
+  setConvolver(ir); drawResponse(logmag);
+  document.getElementById("genMs").textContent = `${(performance.now() - t0).toFixed(0)} ms`;
+  document.getElementById("posText").textContent = `${distance.toFixed(1)} / ${offset.toFixed(1)}`;
+  document.getElementById("readout").textContent = `distance ${distance.toFixed(1)} mm from grille · radial offset ${offset.toFixed(1)} mm from dust-cap center · presence ${presenceEl.value} · ONNX/WASM`;
+}
+function scheduleUpdate() {
+  if (pending) return;
+  pending = true;
+  setTimeout(() => { pending = false; runUpdate(++seq); }, 50);
+}
+let dragging = false;
+pad.addEventListener("pointerdown", e => { dragging = true; ensureAudio(); ctx.resume(); startHint.classList.add("hidden"); padToPosition(e); });
+window.addEventListener("pointermove", e => { if (dragging) padToPosition(e); });
+window.addEventListener("pointerup", () => dragging = false);
+window.addEventListener("resize", () => { updateMicPosition(); drawGrid(); });
+micSelect.addEventListener("change", scheduleUpdate);
+presenceEl.addEventListener("input", () => { document.getElementById("presenceVal").textContent = presenceEl.value; scheduleUpdate(); });
+tailMode.addEventListener("change", scheduleUpdate);
+blendEl.addEventListener("input", () => { document.getElementById("blendVal").textContent = blendEl.value; });
+volumeEl.addEventListener("input", () => {
+  document.getElementById("volumeVal").textContent = volumeEl.value;
+  if (ctx) masterGain.gain.linearRampToValueAtTime(+volumeEl.value / 100, ctx.currentTime + .03);
+});
+document.getElementById("bypass").addEventListener("click", function() { ensureAudio(); bypass = !bypass; this.classList.toggle("on", bypass); this.textContent = bypass ? "Cab bypassed" : "Bypass cab"; scheduleUpdate(); });
+updateMicPosition(); drawGrid(); loadSession().then(scheduleUpdate).catch(e => { runtimeStatus.textContent = `ONNX load failed: ${e.message}`; });
+</script>
+</body>
+</html>

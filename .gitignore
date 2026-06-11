@@ -1,1 +1,23 @@
 .DS_Store
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Raw IR packs are training inputs, never redistributed (license). Keep the
+# drop folder + its README, ignore the audio. Derived dataset is reproducible.
+/data/raw/*
+!/data/raw/README.md
+/data/parsed/
+/data/parsed_*/
+/data/test_audio/
+/data/tone3000/
+
+# Generated audio/checkpoints/reports. Rebuild locally from scripts.
+/exports/
+/runs/
+/app/demo.html
+/app/realtime.html
+
+.env

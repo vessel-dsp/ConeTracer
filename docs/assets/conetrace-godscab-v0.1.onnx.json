@@ -1,0 +1,30 @@
+{
+  "name": "ConeTrace",
+  "release": "conetrace-godscab-v0.1",
+  "checkpoint": "runs/real_pcond_h256/best.pt",
+  "onnx": "docs/assets/conetrace-godscab-v0.1.onnx",
+  "mics": [
+    "c414",
+    "sm57",
+    "sm7b"
+  ],
+  "cabs": [
+    "Mesa Oversized Rectifier 4x12"
+  ],
+  "dist_norm": 5.707110264748875,
+  "off_norm": 83.0,
+  "condition_presence": true,
+  "n_extra": 1,
+  "presence": 3.0,
+  "sr": 48000,
+  "n_taps": 4096,
+  "n_bins": 2049,
+  "inputs": {
+    "mic_idx": "int64[batch]",
+    "cab_idx": "int64[batch]",
+    "distance": "float32[batch], log1p(distance_mm) / dist_norm",
+    "offset": "float32[batch], offset_mm / off_norm",
+    "angle": "float32[batch], angle_deg / 90",
+    "extra": "float32[batch,1], presence as (presence - 1) / 4 when enabled"
+  }
+}

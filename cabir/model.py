@@ -1,8 +1,10 @@
-"""Conditional spectral decoder — pure-numpy MLP with Adam.
+"""Conditional spectral decoder.
 
-f(conditioning) -> log-magnitude spectrum (N_BINS).
-Conditioning: mic one-hot + log(distance) + offset + angle (all normalized).
-Small enough (<1M params) to train on CPU and run in a browser (weights -> JSON).
+Two implementations live here:
+  - ``MLP`` — pure-numpy Adam, used by the zero-install HTML demo (weights baked
+    into app/demo.html as JSON; browser-portable).
+  - ``SpectralDecoder`` — PyTorch nn.Module, used for real-data training (M2).
+    f(mic_emb || cab_emb || distance || offset || angle) -> log|H(f)|
 """
 from __future__ import annotations
 
@@ -95,3 +97,78 @@ class MLP:
         }
         with open(path, "w") as f:
             json.dump(payload, f)
+
+
+# ── PyTorch model (M2 real-data training) ─────────────────────────────────────
+
+import torch
+import torch.nn as nn
+
+from . import N_BINS
+
+
+class SpectralDecoder(nn.Module):
+    """Conditioning → log-magnitude spectrum (N_BINS = 2049 bins @ 48 kHz).
+
+    Architecture: learned embeddings for mic + cab, concatenated with 3 continuous
+    scalars (distance, offset, angle), decoded by a 3-layer MLP.
+
+    Args:
+        n_mics:  vocabulary size (number of unique mics in the dataset)
+        n_cabs:  vocabulary size (number of unique cabs in the dataset)
+        emb_dim: embedding dimension for mic and cab
+        hidden:  width of hidden layers
+        dropout: dropout probability for regularization
+    """
+
+    def __init__(
+        self,
+        n_mics: int,
+        n_cabs: int,
+        emb_dim: int = 8,
+        hidden: int = 256,
+        dropout: float = 0.1,
+        n_extra: int = 0,
+    ):
+        super().__init__()
+        self.n_extra = n_extra
+        self.mic_emb = nn.Embedding(n_mics, emb_dim)
+        self.cab_emb = nn.Embedding(n_cabs, emb_dim)
+        cond_dim = 2 * emb_dim + 3 + n_extra   # mic_e + cab_e + distance + offset + angle + optional scalars
+        self.net = nn.Sequential(
+            nn.Linear(cond_dim, hidden),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden * 2),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden * 2, hidden * 2),
+            nn.SiLU(),
+            nn.Linear(hidden * 2, N_BINS),
+        )
+
+    def forward(
+        self,
+        mic_idx: torch.Tensor,
+        cab_idx: torch.Tensor,
+        distance: torch.Tensor,
+        offset: torch.Tensor,
+        angle: torch.Tensor,
+        extra: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return predicted log-magnitude spectrum, shape (B, N_BINS)."""
+        parts = [
+            self.mic_emb(mic_idx),
+            self.cab_emb(cab_idx),
+            distance.unsqueeze(-1),
+            offset.unsqueeze(-1),
+            angle.unsqueeze(-1),
+        ]
+        if self.n_extra:
+            if extra is None:
+                extra = torch.zeros((mic_idx.shape[0], self.n_extra), device=distance.device, dtype=distance.dtype)
+            elif extra.ndim == 1:
+                extra = extra.unsqueeze(-1)
+            parts.append(extra)
+        cond = torch.cat(parts, dim=-1)
+        return self.net(cond)

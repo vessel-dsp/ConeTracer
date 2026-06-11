@@ -52,6 +52,54 @@ def write_wav(path: str, ir: np.ndarray, sr: int = SR) -> None:
     sf.write(path, normalize_peak(ir).astype(np.float32), sr, subtype="PCM_24")
 
 
+def to_mono(x: np.ndarray) -> np.ndarray:
+    """Collapse a (n,) or (n, channels) buffer to mono by averaging channels."""
+    return x if x.ndim == 1 else x.mean(axis=1)
+
+
+def resample_to(x: np.ndarray, sr_in: int, sr_out: int = SR) -> np.ndarray:
+    """High-quality resample to ``sr_out`` (no-op if already there)."""
+    if sr_in == sr_out:
+        return x
+    import soxr
+
+    return soxr.resample(x, sr_in, sr_out)
+
+
+def align_onset(ir: np.ndarray, thresh_db: float = -40.0, lead: int = 0) -> np.ndarray:
+    """Trim leading silence/pre-delay: drop everything before the first sample
+    whose level crosses ``thresh_db`` below peak, keeping ``lead`` samples of run-up."""
+    peak = float(np.max(np.abs(ir)))
+    if peak <= 0:
+        return ir
+    thr = peak * 10 ** (thresh_db / 20)
+    onset = int(np.argmax(np.abs(ir) >= thr))
+    return ir[max(0, onset - lead):]
+
+
+def fit_length(ir: np.ndarray, n: int = N_TAPS) -> np.ndarray:
+    """Trim or zero-pad to exactly ``n`` samples."""
+    if len(ir) >= n:
+        return ir[:n]
+    out = np.zeros(n, dtype=ir.dtype)
+    out[: len(ir)] = ir
+    return out
+
+
+def normalize_ir(ir: np.ndarray, *, minphase: bool = False) -> np.ndarray:
+    """Full target normalization: window tail -> (optional min-phase) -> unit energy.
+
+    Assumes the input is already mono, 48 kHz, onset-aligned and length-fit.
+    With ``minphase=True`` the IR is replaced by the deterministic min-phase
+    reconstruction of its own magnitude (the design's default training target;
+    keep an ``is_minphase`` flag to A/B against the raw-phase version)."""
+    ir = fade_tail(ir.astype(np.float64))
+    if minphase:
+        mag = np.abs(np.fft.rfft(ir, n=N_TAPS))
+        ir = minphase_from_magnitude(mag)
+    return normalize_energy(ir).astype(np.float32)
+
+
 def log_spectral_distance(mag_a: np.ndarray, mag_b: np.ndarray) -> float:
     """RMS distance in dB between two magnitude responses (100 Hz - 12 kHz band)."""
     n_bins = mag_a.shape[-1]
