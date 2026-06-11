@@ -7,8 +7,6 @@ model on labeled public IR packs, then *generate* a `.wav` impulse response for
 any supported (cab, speaker, mic, position) — including positions never
 captured — and audition mic movement live.
 
-Part of the VesselDSP family: `audio-engine` (workbench), `@vessel-dsp/react-pedal-schematic` (.vdsp), `pedal-stompbox` (physical builds). Output IRs are drop-in compatible with audio-engine's `ConvolverNode` cab lane.
-
 The current release checkpoint is:
 
 ```text

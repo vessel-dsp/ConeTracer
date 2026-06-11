@@ -83,7 +83,7 @@ Design decisions:
 - `--ckpt runs/real/best.pt --mic sm57 --distance 25 --offset 30 --angle 0 --out exports/sm57_25mm_capedge.wav`
 - Pipeline: load `SpectralDecoder` from checkpoint → condition → log-magnitude → `minphase_from_magnitude` → peak-normalize to −0.3 dBFS → 24-bit 48 kHz mono WAV.
 - Batch sweep mode remains next: iterate (e.g.) 11 offsets across the cone → export an IR pack folder with the parsed filename grammar (round-trip-able).
-- Target consumers: any IR loader; audio-engine's cab lane (`ConvolverNode`) directly.
+- Target consumers: any IR loader or WebAudio `ConvolverNode` host.
 - Current implementation supports both smoke `.npz` checkpoints and real PyTorch `.pt` checkpoints.
 
 ## 4. Test UI (Workstream 4) — Gradio, in-repo
