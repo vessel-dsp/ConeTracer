@@ -1,0 +1,62 @@
+name: Publish Release Assets
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish"
+        required: true
+        default: "v0.1"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare checksums
+        run: |
+          cd docs
+          sha256sum \
+            assets/conetrace-godscab-v0.1.onnx \
+            assets/conetrace-godscab-v0.1.onnx.json \
+            wasm.html > SHA256SUMS
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes_file="$(mktemp)"
+          cat > "$notes_file" <<'NOTES'
+          ConeTrace v0.1 release assets.
+
+          Assets:
+          - `conetrace-godscab-v0.1.onnx`: ONNX export of the release checkpoint.
+          - `conetrace-godscab-v0.1.onnx.json`: runtime metadata for the ONNX export.
+          - `wasm.html`: ONNX Runtime Web/WASM realtime demo page.
+          - `SHA256SUMS`: checksums for the release assets.
+
+          This release does not upload the PyTorch checkpoint from `runs/` or any third-party raw/captured IR audio.
+          NOTES
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" --title "ConeTrace ${TAG_NAME}" --notes-file "$notes_file"
+          else
+            gh release create "$TAG_NAME" --title "ConeTrace ${TAG_NAME}" --notes-file "$notes_file" --verify-tag
+          fi
+
+          gh release upload "$TAG_NAME" \
+            docs/assets/conetrace-godscab-v0.1.onnx \
+            docs/assets/conetrace-godscab-v0.1.onnx.json \
+            docs/wasm.html \
+            docs/SHA256SUMS \
+            --clobber
